@@ -1,13 +1,12 @@
+// Copyright 2014 Andrew Tulloch <andrew@tullo.ch>
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <unordered_map>
-#include <limits>
 
 #include <boost/intrusive/list.hpp>
-#include <boost/iterator/iterator_facade.hpp>
 #include <boost/iterator/iterator_adaptor.hpp>
-#include <boost/range/adaptor/reversed.hpp>
 #include <boost/noncopyable.hpp>
 
 namespace lrucache {
@@ -20,7 +19,6 @@ class Entry : public boost::intrusive::list_base_hook<> {
   Entry(const Key& key, const T& value) : p_(key, value) {}
   std::pair<const Key, T> p_;
 };
-
 }
 
 template<class Key,
@@ -32,7 +30,6 @@ class LRUCacheMap : public boost::noncopyable {
  private:
   template<typename VT, typename UT>
   class Iterator;
-
   using Entry = detail::Entry<Key, T>;
   using LinkedList = boost::intrusive::list<Entry>;
 
@@ -47,23 +44,22 @@ class LRUCacheMap : public boost::noncopyable {
   typedef Allocator allocator_type;
   typedef value_type& reference;
   typedef const value_type& const_reference;
-
   typedef typename std::allocator_traits<Allocator>::pointer
       pointer;
   typedef typename std::allocator_traits<Allocator>::const_pointer
       const_pointer;
-
   typedef Iterator<value_type, typename LinkedList::iterator>
       iterator;
   typedef Iterator<const value_type, typename LinkedList::const_iterator>
       const_iterator;
   typedef Iterator<value_type, typename LinkedList::reverse_iterator>
       reverse_iterator;
-  typedef Iterator<const value_type, typename LinkedList::const_reverse_iterator>
+  typedef Iterator<const value_type,
+                   typename LinkedList::const_reverse_iterator>
       const_reverse_iterator;
 
   // Constructor
-  LRUCacheMap(size_t maxSize = std::numeric_limits<size_t>::max(),
+  explicit LRUCacheMap(size_t maxSize = std::numeric_limits<size_t>::max(),
               size_t reclaimSize = 1)
       : maxSize_(maxSize)
       , reclaimSize_(reclaimSize) {
@@ -82,58 +78,101 @@ class LRUCacheMap : public boost::noncopyable {
   const_reverse_iterator rend() const {
     return const_reverse_iterator(entries_.rend());
   }
+
   // Capacity
   bool empty() const { return map_.empty(); }
-  size_t size() const { return map_.size(); }
-  size_t max_size() const { return maxSize_; }
+  size_type size() const { return map_.size(); }
+  size_type max_size() const { return maxSize_; }
 
   // Modifiers
-  void clear() { entries_.clear();  map_.clear(); }
+  void clear() {
+    entries_.clear();
+    map_.clear();
+  }
 
-  void set(const Key& key, const T& value) {
-    Entry candidate(key, value);
-    const auto p = map_.insert({key, candidate});
-    auto& e = p.first->second;
-    if (!p.second) {
-      e.p_.second = std::move(candidate.p_.second);
-      moveToFront(e);
-      return;
+  iterator find(const Key& key) {
+    const auto it = findEntry(key);
+    if (it == entries_.end()) {
+      return end();
     }
-    entries_.push_front(e);
+    moveToFront(it);
+    return iterator(findEntry(key));
+  }
+
+  size_type count(const Key& key) const {
+    return map_.find(key) == map_.end() ? 0 : 1;
+  }
+
+  std::pair<iterator, bool> insert(const value_type& value) {
+    //  Path where value exists
+    if (find(value.first) != end()) {
+      return {find(value.first), false};
+    }
+
+    // Path where value does not exist
+    const auto it = map_.insert(
+         {value.first, Entry(value.first, value.second)}).first;
+    entries_.push_front(it->second);
 
     // Possible removal
     if (map_.size() > maxSize_) {
       shrinkToFit();
     }
+    return {find(value.first), true};
   }
 
-  // Lookup
-  bool get(const Key& key, T* value) {
-    assert(value != nullptr);
-    const auto it = map_.find(key);
-    if (it == map_.end()) {
-      return false;
+  T& operator[](const Key& key) {
+    const auto it = find(key);
+    if (it != end()) {
+      return it->second;
     }
-    *value = it->second.p_.second;
-    moveToFront(it->second);
-    return true;
+    return insert({key, T()}).first->second;
   }
+
+  size_type erase(const Key& key) {
+    const auto it = find(key);
+    if (it == end()) {
+      return 0;
+    }
+    erase(it);
+    return 1;
+  }
+
+  iterator erase(const_iterator pos) {
+    const auto it = find(pos->first);
+    assert(it != end());
+    const auto ret = iterator(entries_.erase(it.base()));
+    map_.erase(pos->first);
+    return ret;
+  }
+
+  // Observers
+  hasher hash_function() const { return hasher(); }
+  key_equal key_eq() const { return key_equal(); }
+
+  void reserve(size_type count) { map_.reserve(count); }
+  void rehash(size_type count) { map_.rehash(count); }
 
  private:
   template<class VT, class UT>
   class Iterator : public boost::iterator_adaptor<Iterator<VT, UT>, UT, VT> {
    public:
-    Iterator(UT iter)
-        : Iterator::iterator_adaptor_(iter) {}
+    explicit Iterator(UT iter): Iterator::iterator_adaptor_(iter) {}
+
+    template <class OtherVT, class OtherUT>
+    Iterator(
+        Iterator<OtherVT, OtherUT> const& other,
+        typename std::enable_if<
+          std::is_convertible<OtherUT, UT>::value
+        >::type* = nullptr): Iterator::iterator_adaptor_(other.base()) {}
+
    private:
     friend class boost::iterator_core_access;
-    VT& dereference() const {
-      return this->base_reference()->p_;
-    }
+
+    VT& dereference() const { return this->base_reference()->p_; }
   };
 
-  void moveToFront(Entry& entry) {
-    auto it = entries_.iterator_to(entry);
+  void moveToFront(typename LinkedList::iterator it) {
     assert(it != entries_.end());
     entries_.erase(it);
     entries_.push_front(*it);
@@ -147,6 +186,14 @@ class LRUCacheMap : public boost::noncopyable {
       entries_.pop_back();
       map_.erase(key);
     }
+  }
+
+  typename LinkedList::iterator findEntry(const Key& key) {
+    const auto it = map_.find(key);
+    if (it == map_.end()) {
+      return entries_.end();
+    }
+    return entries_.iterator_to(it->second);
   }
 
   size_t maxSize_{0};

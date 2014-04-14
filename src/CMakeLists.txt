@@ -8,5 +8,4 @@ set(CMAKE_CXX_FLAGS "-Wall -std=c++11")
 set(LRUCACHE_SRCS main.cpp)
 add_executable(lrucache ${LRUCACHE_SRCS})
 target_link_libraries(lrucache ${Boost_LIBRARIES})
-
-set(CMAKE_BUILD_TYPE Debug)
+add_test(lrucache lrucache Debug)

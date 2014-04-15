@@ -1,5 +1,4 @@
 // Copyright 2014 Andrew Tulloch <andrew@tullo.ch>
-
 #include <boost/assert.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 

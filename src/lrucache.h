@@ -60,7 +60,7 @@ class LRUCacheMap : public boost::noncopyable {
 
   // Constructor
   explicit LRUCacheMap(size_t maxSize = std::numeric_limits<size_t>::max(),
-              size_t reclaimSize = 1)
+                       size_t reclaimSize = 1)
       : maxSize_(maxSize)
       , reclaimSize_(reclaimSize) {
   }
@@ -90,13 +90,14 @@ class LRUCacheMap : public boost::noncopyable {
     map_.clear();
   }
 
+  const_iterator find_no_reorder(const Key& key) const { return findEntry(key); }
+  iterator find_no_reorder(const Key& key) { return findEntry(key); }
+
   iterator find(const Key& key) {
     const auto it = findEntry(key);
-    if (it == entries_.end()) {
-      return end();
-    }
+    if (it == end()) { return end(); }
     moveToFront(it);
-    return iterator(findEntry(key));
+    return findEntry(key);
   }
 
   size_type count(const Key& key) const {
@@ -105,29 +106,18 @@ class LRUCacheMap : public boost::noncopyable {
 
   std::pair<iterator, bool> insert(const value_type& value) {
     //  Path where value exists
-    if (find(value.first) != end()) {
-      return {find(value.first), false};
-    }
+    if (find(value.first) != end()) { return {find(value.first), false}; }
 
     // Path where value does not exist
     const auto it = map_.insert(
          {value.first, Entry(value.first, value.second)}).first;
     entries_.push_front(it->second);
-
     // Possible removal
-    if (map_.size() > maxSize_) {
-      shrinkToFit();
-    }
+    maybeShrink();
     return {find(value.first), true};
   }
 
-  T& operator[](const Key& key) {
-    const auto it = find(key);
-    if (it != end()) {
-      return it->second;
-    }
-    return insert({key, T()}).first->second;
-  }
+  T& operator[](const Key& key) { return insert({key, T()}).first->second; }
 
   size_type erase(const Key& key) {
     const auto it = find(key);
@@ -139,11 +129,9 @@ class LRUCacheMap : public boost::noncopyable {
   }
 
   iterator erase(const_iterator pos) {
-    const auto it = find(pos->first);
-    assert(it != end());
-    const auto ret = iterator(entries_.erase(it.base()));
+    const auto ret = entries_.erase(pos.base());
     map_.erase(pos->first);
-    return ret;
+    return iterator(ret);
   }
 
   // Observers
@@ -157,45 +145,46 @@ class LRUCacheMap : public boost::noncopyable {
   template<class VT, class UT>
   class Iterator : public boost::iterator_adaptor<Iterator<VT, UT>, UT, VT> {
    public:
-    explicit Iterator(UT iter): Iterator::iterator_adaptor_(iter) {}
+    explicit Iterator(UT iter)
+        : Iterator::iterator_adaptor_(iter) {}
 
     template <class OtherVT, class OtherUT>
-    Iterator(
-        Iterator<OtherVT, OtherUT> const& other,
-        typename std::enable_if<
-          std::is_convertible<OtherUT, UT>::value
-        >::type* = nullptr): Iterator::iterator_adaptor_(other.base()) {}
+    Iterator(Iterator<OtherVT, OtherUT> const& other)
+        : Iterator::iterator_adaptor_(other.base()) {}
 
    private:
     friend class boost::iterator_core_access;
-
     VT& dereference() const { return this->base_reference()->p_; }
   };
 
-  void moveToFront(typename LinkedList::iterator it) {
-    assert(it != entries_.end());
-    entries_.erase(it);
-    entries_.push_front(*it);
+  void moveToFront(iterator it) {
+    assert(it != end());
+    entries_.erase(it.base());
+    entries_.push_front(*(it.base()));
   }
 
-  void shrinkToFit() {
-    for (size_t numRemoved = 0;
-         map_.size() > 0 && map_.size() > maxSize_ && numRemoved < reclaimSize_;
-         ++numRemoved) {
+  void maybeShrink() {
+    if (map_.size() <= maxSize_) { return; }
+    for (size_t removed = 0; !map_.empty() && removed < reclaimSize_; ++removed) {
       const auto& key = entries_.back().p_.first;
       entries_.pop_back();
       map_.erase(key);
     }
   }
 
-  typename LinkedList::iterator findEntry(const Key& key) {
+  iterator findEntry(const Key& key) {
     const auto it = map_.find(key);
-    if (it == map_.end()) {
-      return entries_.end();
-    }
-    return entries_.iterator_to(it->second);
+    if (it == map_.end()) { return end(); }
+    return iterator(entries_.iterator_to(it->second));
   }
 
+  const_iterator findEntry(const Key& key) const {
+    const auto it = map_.find(key);
+    if (it == map_.end()) { return end(); }
+    return const_iterator(entries_.iterator_to(it->second));
+  }
+
+  // Members
   size_t maxSize_{0};
   size_t reclaimSize_{0};
   std::unordered_map<Key, Entry, Hash, KeyEqual> map_;
